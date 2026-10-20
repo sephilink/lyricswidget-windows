@@ -1,0 +1,5 @@
+__pycache__
+.kiro
+.venv
+lyricswidget.log*
+lyricswidget.db*

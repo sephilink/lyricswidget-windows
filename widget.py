@@ -99,6 +99,8 @@ class SyncedLyricsView(QtWidgets.QScrollArea):
         self._lines: list[SyncedLine] = []
         self._active = -1
         self._one_line = False  # when True, show only the active lyric line
+        self._base_size = 13  # px for inactive lines; the active line is base + 2
+        self._muted = False  # whether current content is a status message (dimmer colour)
 
         # Scrollbar hidden (zero-width) until the view is hovered/focused.
         self.set_scrollbar_visible(False)
@@ -118,6 +120,35 @@ class SyncedLyricsView(QtWidgets.QScrollArea):
         """One-line mode: show only the active lyric line, hiding all the others."""
         self._one_line = on
         self._apply_line_visibility()
+
+    def adjust_font(self, delta: int) -> int:
+        """Change the base lyric font size by delta px (clamped 8..40); returns the new size."""
+        self._base_size = max(8, min(40, self._base_size + delta))
+        self._restyle_all()
+        return self._base_size
+
+    @property
+    def font_size(self) -> int:
+        return self._base_size
+
+    def _style_label(self, lbl: QtWidgets.QLabel, active: bool) -> None:
+        """Apply colour/size/weight to a label from the current base size and active state."""
+        if self._muted:
+            lbl.setStyleSheet(f"color:#9a9ab5; font-size:{self._base_size}px; font-family:{FONT_FAMILY};")
+        elif active:
+            size = self._base_size + 2
+            lbl.setStyleSheet(
+                f"color:{ACTIVE_COLOR}; font-size:{size}px; font-weight:700; font-family:{FONT_FAMILY};"
+            )
+        else:
+            lbl.setStyleSheet(
+                f"color:{INACTIVE_COLOR}; font-size:{self._base_size}px; font-family:{FONT_FAMILY};"
+            )
+
+    def _restyle_all(self) -> None:
+        """Re-apply styling to every label (after a font-size change)."""
+        for i, lbl in enumerate(self._labels):
+            self._style_label(lbl, active=(i == self._active))
 
     def _apply_line_visibility(self) -> None:
         """Show every label, or only the active one when one-line mode is on."""
@@ -154,17 +185,17 @@ class SyncedLyricsView(QtWidgets.QScrollArea):
 
     def _set_labels(self, texts: list[str], muted: bool) -> None:
         """Rebuild the label column from a list of strings."""
+        self._muted = muted
         while self._layout.count():
             item = self._layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         self._labels = []
-        color = "#9a9ab5" if muted else INACTIVE_COLOR
         for text in texts:
             lbl = QtWidgets.QLabel(text)
             lbl.setWordWrap(True)
             lbl.setAlignment(QtCore.Qt.AlignHCenter)
-            lbl.setStyleSheet(f"color:{color}; font-size:13px; font-family:{FONT_FAMILY};")
+            self._style_label(lbl, active=False)
             _apply_text_shadow(lbl)
             self._layout.addWidget(lbl)
             self._labels.append(lbl)
@@ -180,14 +211,7 @@ class SyncedLyricsView(QtWidgets.QScrollArea):
             return
         self._active = idx
         for i, lbl in enumerate(self._labels):
-            if i == idx:
-                lbl.setStyleSheet(
-                    f"color:{ACTIVE_COLOR}; font-size:15px; font-weight:700; font-family:{FONT_FAMILY};"
-                )
-            else:
-                lbl.setStyleSheet(
-                    f"color:{INACTIVE_COLOR}; font-size:13px; font-family:{FONT_FAMILY};"
-                )
+            self._style_label(lbl, active=(i == idx))
         if self._one_line:
             self._apply_line_visibility()  # keep only the (new) active line showing
         if 0 <= idx < len(self._labels):
@@ -281,7 +305,7 @@ class Widget(QtWidgets.QWidget):
 
         self.view = SyncedLyricsView()
         self.view.set_message(
-            "Play a song in your browser \u2014 lyrics follow along automatically."
+            "Play a song in Spotify or your browser \u2014 lyrics follow along automatically."
         )
 
         card_layout = QtWidgets.QVBoxLayout(self.card)
@@ -309,6 +333,12 @@ class Widget(QtWidgets.QWidget):
         self.menu_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         self.menu_btn.setMenu(self._build_menu())
         self.menu_btn.setVisible(False)
+
+        # Visible bottom-right resize grip (the edge hot-zone alone is invisible on a
+        # transparent widget); revealed on hover like the other overlay controls.
+        self.grip = QtWidgets.QSizeGrip(self)
+        self.grip.setFixedSize(16, 16)
+        self.grip.setVisible(False)
 
         # --- poll: triggers an off-thread SMTC read + extrapolates position locally ---
         self._follow = True
@@ -358,6 +388,8 @@ class Widget(QtWidgets.QWidget):
         self.oneline_action.setChecked(False)
         self.oneline_action.toggled.connect(self._set_one_line)
 
+        menu.addAction(self._build_font_row())
+
         self.search_action = menu.addAction("Show search box")
         self.search_action.setCheckable(True)
         self.search_action.setChecked(False)
@@ -378,6 +410,42 @@ class Widget(QtWidgets.QWidget):
         """Toggle one-line lyric mode (show only the current line)."""
         log.info("_set_one_line: %s", on)
         self.view.set_one_line(on)
+
+    def _build_font_row(self) -> QtWidgets.QWidgetAction:
+        """A menu row with A- / size / A+ buttons to shrink or grow the lyric font."""
+        row = QtWidgets.QWidget()
+        lay = QtWidgets.QHBoxLayout(row)
+        lay.setContentsMargins(10, 4, 10, 4)
+        lay.setSpacing(6)
+
+        label = QtWidgets.QLabel("Font")
+        label.setStyleSheet("color:#cfc8ff; font-size:10px;")
+        minus = QtWidgets.QPushButton("A\u2212")  # A−
+        plus = QtWidgets.QPushButton("A+")
+        self._font_size_lbl = QtWidgets.QLabel(str(self.view.font_size))
+        self._font_size_lbl.setStyleSheet("color:#cfc8ff; font-size:10px; min-width:16px;")
+        self._font_size_lbl.setAlignment(QtCore.Qt.AlignHCenter)
+        for b in (minus, plus):
+            b.setFixedSize(26, 22)
+            b.setStyleSheet(BTN_STYLE)
+        minus.clicked.connect(lambda: self._change_font(-1))
+        plus.clicked.connect(lambda: self._change_font(+1))
+
+        lay.addWidget(label)
+        lay.addStretch(1)
+        lay.addWidget(minus)
+        lay.addWidget(self._font_size_lbl)
+        lay.addWidget(plus)
+
+        action = QtWidgets.QWidgetAction(self)
+        action.setDefaultWidget(row)
+        return action
+
+    def _change_font(self, delta: int) -> None:
+        """Grow/shrink the lyric font and update the size readout in the menu."""
+        size = self.view.adjust_font(delta)
+        log.info("_change_font: delta=%d -> %dpx", delta, size)
+        self._font_size_lbl.setText(str(size))
 
     # --- playback poll: the single driver of fetch + sync ---
 
@@ -615,10 +683,13 @@ class Widget(QtWidgets.QWidget):
     # --- overlay placement + hover reveal ---
 
     def _position_overlay(self) -> None:
-        """Place the floating menu/close buttons in the top corners over the card."""
+        """Place the floating menu/close buttons and the resize grip over the card."""
         m = 8
         self.menu_btn.move(m, m)
         self.close_btn.move(self.width() - self.close_btn.width() - m, m)
+        self.grip.move(
+            self.width() - self.grip.width() - 2, self.height() - self.grip.height() - 2
+        )
 
     def resizeEvent(self, e) -> None:  # noqa: N802 - Qt override
         self._position_overlay()
@@ -628,8 +699,10 @@ class Widget(QtWidgets.QWidget):
         self._position_overlay()
         self.menu_btn.setVisible(True)
         self.close_btn.setVisible(True)
+        self.grip.setVisible(True)
         self.menu_btn.raise_()
         self.close_btn.raise_()
+        self.grip.raise_()
         self.view.set_scrollbar_visible(True)
 
     def leaveEvent(self, _e) -> None:  # noqa: N802 - Qt override
@@ -637,6 +710,7 @@ class Widget(QtWidgets.QWidget):
             return
         self.menu_btn.setVisible(False)
         self.close_btn.setVisible(False)
+        self.grip.setVisible(False)
         self.view.set_scrollbar_visible(False)
 
     # --- drag + aspect-free resize from edges/corners ---

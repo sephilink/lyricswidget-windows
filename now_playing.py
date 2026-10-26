@@ -1,9 +1,14 @@
-"""Reads the current browser 'now playing' track from the Windows media session (SMTC).
+"""Reads the current 'now playing' track from the Windows media session (SMTC).
 
-Chrome/Edge report YouTube playback to the OS media overlay, which exposes an artist and
-title per session. For YouTube the reported artist is usually the channel (e.g. 'FooVEVO',
-'Foo - Topic') and the title is the raw video name, so this module parses the video title
-into a clean (artist, song) pair suitable for a lyrics lookup.
+Any media app that reports to the OS media overlay is picked up -- browsers playing
+YouTube, and the Spotify desktop client. These two report differently, so this module
+parses per source:
+  - Browsers/YouTube expose the channel as the 'artist' (e.g. 'FooVEVO', 'Foo - Topic')
+    and a raw video title ('Artist - Song (Official Video)'), so the title is split on a
+    dash and bracketed noise is stripped.
+  - Spotify already reports clean, structured artist and title fields, so those are taken
+    verbatim -- running the YouTube heuristics on them would only corrupt good data.
+The result is a clean (artist, song) pair suitable for a lyrics lookup.
 """
 from __future__ import annotations
 
@@ -58,31 +63,73 @@ def _clean_channel(raw: str) -> str:
     return _CHANNEL_NOISE.sub("", raw).strip()
 
 
-def parse_track(artist_field: str, title_field: str) -> tuple[str, str] | None:
-    """Derive (artist, song) from the SMTC artist/title fields, or None if unparseable.
+# Media sources that already report clean, structured artist/title metadata (a real music
+# player, not a browser). For these we trust the fields verbatim and skip the YouTube
+# heuristics, which would otherwise mangle a legitimate title containing a dash
+# (e.g. 'Marvins Room - Live') or a correctly-reported artist. Matched as a case-insensitive
+# substring of the SMTC source_app_user_model_id so both the desktop and Microsoft Store
+# builds are covered (e.g. 'Spotify.exe' and 'SpotifyAB.SpotifyMusic_...!Spotify').
+_STRUCTURED_SOURCES = ("spotify",)
+
+
+def _is_structured_source(app_id: str) -> bool:
+    """True when the media source reports clean metadata we can trust without cleanup."""
+    app = (app_id or "").casefold()
+    return any(name in app for name in _STRUCTURED_SOURCES)
+
+
+def _parse_structured(artist_field: str, title_field: str) -> tuple[str, str] | None:
+    """Take a clean-metadata source's fields at face value: (artist, song) or None.
+
+    No dash-splitting or noise-stripping -- players like Spotify already separate the
+    artist and song into their own fields, so applying the YouTube heuristics here would
+    only corrupt good data.
+    """
+    artist = (artist_field or "").strip()
+    title = (title_field or "").strip()
+    if artist and title:
+        return (artist, title)
+    log.debug("_parse_structured: incomplete (artist=%r title=%r)", artist_field, title_field)
+    return None
+
+
+def _parse_youtube(artist_field: str, title_field: str) -> tuple[str, str] | None:
+    """Derive (artist, song) from a browser/YouTube session's messy artist/title fields.
 
     Prefers the video title's own 'Artist - Song' split (most reliable for YouTube);
     falls back to the reported channel as the artist when the title has no separator.
     """
     title = _clean_title(title_field or "")
     if not title:
-        log.debug("parse_track: empty title after cleaning (raw=%r)", title_field)
+        log.debug("_parse_youtube: empty title after cleaning (raw=%r)", title_field)
         return None
 
     # Most music videos are titled 'Artist - Song (...)'. Split on the first dash variant.
     parts = re.split(r"\s+[-\u2013\u2014]\s+", title, maxsplit=1)
     if len(parts) == 2 and parts[0].strip() and parts[1].strip():
         result = (parts[0].strip(), parts[1].strip())
-        log.debug("parse_track: title-split %r/%r -> %r", artist_field, title_field, result)
+        log.debug("_parse_youtube: title-split %r/%r -> %r", artist_field, title_field, result)
         return result
 
     channel = _clean_channel(artist_field or "")
     if channel:
         result = (channel, title)
-        log.debug("parse_track: channel-fallback %r/%r -> %r", artist_field, title_field, result)
+        log.debug("_parse_youtube: channel-fallback %r/%r -> %r", artist_field, title_field, result)
         return result
-    log.debug("parse_track: unparseable (artist=%r title=%r)", artist_field, title_field)
+    log.debug("_parse_youtube: unparseable (artist=%r title=%r)", artist_field, title_field)
     return None
+
+
+def parse_track(artist_field: str, title_field: str, app_id: str = "") -> tuple[str, str] | None:
+    """Derive (artist, song) from the SMTC fields, choosing a strategy from the source app.
+
+    A structured source (e.g. the Spotify client) already reports clean artist/title fields,
+    so they're used verbatim. A browser/YouTube session reports a raw video title and a
+    channel name, so the YouTube heuristics (dash-split + noise-strip) are applied instead.
+    """
+    if _is_structured_source(app_id):
+        return _parse_structured(artist_field, title_field)
+    return _parse_youtube(artist_field, title_field)
 
 
 @dataclass(frozen=True)
@@ -102,7 +149,7 @@ class PlaybackState:
 
 def _state_from_probe(data: dict) -> PlaybackState | None:
     """Turn the probe's JSON payload into a PlaybackState with a live-extrapolated position."""
-    parsed = parse_track(data.get("artist", ""), data.get("title", ""))
+    parsed = parse_track(data.get("artist", ""), data.get("title", ""), data.get("app", ""))
     if parsed is None:
         log.debug("_state_from_probe: unparseable app=%r artist=%r title=%r",
                   data.get("app"), data.get("artist"), data.get("title"))

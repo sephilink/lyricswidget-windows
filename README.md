@@ -4,29 +4,41 @@ A floating, always-on-top desktop lyrics widget for Windows, built with PySide6 
 the same style as `soundwidget`: a frameless, translucent, draggable card you can
 park anywhere on screen.
 
-Play a song in your browser and the lyrics load automatically and **scroll in time
-with the music** (karaoke-style line highlighting). You can also type an artist and
-title and hit **Search**. Lyrics come from [LRCLIB](https://lrclib.net), a free,
-key-less lyrics API that provides time-synced lyrics.
+Play a song in **Spotify or your browser** and the lyrics load automatically and
+**scroll in time with the music** (karaoke-style line highlighting). You can also type
+an artist and title and hit **Search**. Lyrics come from
+[LRCLIB](https://lrclib.net), a free, key-less lyrics API that provides time-synced
+lyrics.
 
 ## How it follows playback
 
 The widget reads the currently playing track and playback position from the
 **Windows System Media Transport Controls (SMTC)** — the same "now playing" data
-behind the Windows media overlay. Chrome, Edge and other Chromium browsers report
-YouTube playback to it, so no browser extension or tab pairing is needed.
+behind the Windows media overlay. Any app that reports to it is picked up, with no
+browser extension or tab pairing needed:
+
+- **Spotify** — the desktop client. This also covers **Spotify Connect**: when you
+  play on your phone (or another device) and the desktop client is open, Windows still
+  reports the track and a live playback position, so the lyrics follow your phone.
+- **Chrome, Edge and other Chromium browsers** playing YouTube.
+
+Controls:
 
 - **Follow what's playing** (on by default, toggle in the settings menu) — the
-  widget detects the current track and keeps the active lyric line centred as the
-  video plays.
-- Pause, resume and seeking in the video are tracked automatically; the active line
-  follows the real playback position.
+  widget detects the current track and keeps the active lyric line centred as it plays.
+- Pause, resume and seeking are tracked automatically; the active line follows the
+  real playback position.
 
-Because YouTube titles are freeform, the widget parses the video title
-(`Artist - Song (Official Video)` and similar) into a clean artist/song pair and
-strips tags like `(Official Video)`, `[Lyrics]`, `| Official Music Video`. The
-reported channel name (e.g. `FooVEVO`, `Foo - Topic`) is used only as a fallback
-artist when the title has no separator.
+The two sources report metadata differently, so the widget parses per source:
+
+- **Spotify** already reports clean, structured artist and title fields, so they're
+  used as-is — a legitimate song title containing a dash (e.g. `Marvins Room - Live`)
+  is preserved intact.
+- **YouTube** titles are freeform, so the widget parses the video title
+  (`Artist - Song (Official Video)` and similar) into a clean artist/song pair and
+  strips tags like `(Official Video)`, `[Lyrics]`, `| Official Music Video`. The
+  reported channel name (e.g. `FooVEVO`, `Foo - Topic`) is used only as a fallback
+  artist when the title has no separator.
 
 ## Keeping LRCLIB traffic minimal
 
@@ -65,7 +77,8 @@ readable over any background). There's no card, panel, or frame.
 - Click-through (Ctrl+Alt+C / Shift+Click / menu), like soundwidget
 - Search box hidden by default, toggled from the menu
 - Time-synced lyrics that scroll with the playing song (when synced lyrics exist)
-- Auto-detects the current track from the browser's now-playing media (Windows SMTC)
+- Auto-detects the current track from Spotify (incl. phone playback via Spotify
+  Connect) or the browser's now-playing media (Windows SMTC)
 - Falls back to a static plain-lyrics view when a track has no synced lyrics
 - Persistent SQLite lyrics cache (fetches each track from LRCLIB at most once, ever)
 - Background lookups keep the UI responsive
